@@ -45,7 +45,8 @@ VK_DOMAIN       = "yokozuna_japan"
 VK_API_VERSION  = "5.199"
 VK_POSTS_COUNT  = 20
 
-OPENAI_MODEL    = "gpt-4.5-preview"
+OPENAI_MODEL    = os.environ.get("OPENAI_MODEL", "gpt-4o")
+
 
 # ─────────────────────────────────────────────
 # ENV
