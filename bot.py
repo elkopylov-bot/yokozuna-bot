@@ -291,12 +291,13 @@ def save_ideas(data: list) -> None:
 # ─────────────────────────────────────────────
 
 def send_message(chat_id: int, text: str, parse_mode: str = "Markdown",
-                 reply_to_message_id: Optional[int] = None) -> Optional[dict]:
+                 reply_to_message_id: Optional[int] = None,
+                 reply_markup: Optional[dict] = None) -> Optional[dict]:
     """Send a Telegram message, splitting if > 4096 chars."""
     MAX_LEN = 4000
     chunks = [text[i:i+MAX_LEN] for i in range(0, len(text), MAX_LEN)]
     last_response = None
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
         payload = {
             "chat_id": chat_id,
             "text": chunk,
@@ -305,14 +306,16 @@ def send_message(chat_id: int, text: str, parse_mode: str = "Markdown",
         }
         if reply_to_message_id:
             payload["reply_to_message_id"] = reply_to_message_id
-            reply_to_message_id = None  # only first chunk gets reply
+            reply_to_message_id = None
+        # Inline кнопки только к последнему чанку
+        if reply_markup and i == len(chunks) - 1:
+            payload["reply_markup"] = reply_markup
         try:
             r = requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=30)
             r.raise_for_status()
             last_response = r.json()
         except Exception as e:
             log.error(f"sendMessage error: {e}")
-            # Fallback: plain text
             try:
                 payload["parse_mode"] = None
                 r = requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=30)
@@ -320,6 +323,27 @@ def send_message(chat_id: int, text: str, parse_mode: str = "Markdown",
             except Exception as e2:
                 log.error(f"sendMessage fallback error: {e2}")
     return last_response
+
+
+START_KEYBOARD = {
+    "inline_keyboard": [
+        [
+            {"text": "🔄 Синк каналов", "callback_data": "/sync"},
+            {"text": "💡 Идеи", "callback_data": "/ideas"},
+        ],
+        [
+            {"text": "📋 Реестр RU", "callback_data": "/registry_ru"},
+            {"text": "📋 Реестр EN", "callback_data": "/registry_en"},
+        ],
+        [
+            {"text": "📅 План RU", "callback_data": "/plan_ru"},
+            {"text": "📅 План EN", "callback_data": "/plan_en"},
+        ],
+        [
+            {"text": "🔔 Напоминания", "callback_data": "/reminders"},
+        ],
+    ]
+}
 
 
 def get_bot_id() -> Optional[int]:
@@ -1156,28 +1180,36 @@ def route_message(message: dict) -> Optional[str]:
     if lower in ("/start", "/help", "help", "помощь", "/помощь"):
         return HELP_TEXT
 
-    # ── /синк ──
-    if lower == "/синк":
+    # ── /синк / /sync ──
+    if lower in ("/синк", "/sync"):
         return sync_channels()
 
-    # ── /реестр ──
+    # ── /реестр / /registry_ru / /registry_en ──
     if lower.startswith("/реестр"):
         arg = clean_text[7:].strip() or "ru"
         return format_registry(arg)
+    if lower == "/registry_ru":
+        return format_registry("ru")
+    if lower == "/registry_en":
+        return format_registry("en")
 
-    # ── /план ──
+    # ── /план / /plan_ru / /plan_en ──
     if lower.startswith("/план"):
         arg = clean_text[5:].strip().lower() or "ru"
         if arg not in ("ru", "en"):
             return "❗️ Укажи поток: `/план ru` или `/план en`"
         return generate_content_plan(arg)
+    if lower == "/plan_ru":
+        return generate_content_plan("ru")
+    if lower == "/plan_en":
+        return generate_content_plan("en")
 
-    # ── /идеи ──
-    if lower in ("/идеи", "идеи"):
+    # ── /идеи / /ideas ──
+    if lower in ("/идеи", "идеи", "/ideas"):
         return show_ideas()
 
-    # ── /напоминания ──
-    if lower in ("/напоминания", "напоминания"):
+    # ── /напоминания / /reminders ──
+    if lower in ("/напоминания", "напоминания", "/reminders"):
         return show_reminders()
 
     # ── идея в план: ──
@@ -1270,6 +1302,23 @@ def webhook():
         for msg in due_messages:
             send_message(GROUP_ID, msg)
 
+        # ── Handle callback_query (нажатие inline кнопки) ──
+        callback = data.get("callback_query")
+        if callback:
+            cb_chat_id = callback["message"]["chat"]["id"]
+            cb_data = callback.get("data", "")
+            cb_id = callback["id"]
+            # Отвечаем Telegram что обработали
+            requests.post(f"{TELEGRAM_API}/answerCallbackQuery",
+                          json={"callback_query_id": cb_id}, timeout=10)
+            if is_authorized(cb_chat_id):
+                # Создаём фейковое сообщение для route_message
+                fake_msg = {"chat": {"id": cb_chat_id, "type": "private"}, "text": cb_data}
+                response_text = route_message(fake_msg)
+                if response_text:
+                    send_message(cb_chat_id, response_text)
+            return jsonify({"ok": True}), 200
+
         # ── Handle message ──
         message = data.get("message") or data.get("edited_message")
         if not message:
@@ -1290,7 +1339,12 @@ def webhook():
         # Route message
         response_text = route_message(message)
         if response_text:
-            sent = send_message(chat_id, response_text, reply_to_message_id=msg_id)
+            # Для /start добавляем inline кнопки
+            text_raw = message.get("text", "").strip().lower()
+            markup = START_KEYBOARD if text_raw in ("/start", "/help") else None
+            sent = send_message(chat_id, response_text,
+                                reply_to_message_id=msg_id,
+                                reply_markup=markup)
             # Store generated post for potential revision
             if sent and response_text and "━━━ ПОСТ ━━━" in response_text:
                 sent_msg_id = sent.get("result", {}).get("message_id", msg_id)
