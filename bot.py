@@ -1,7 +1,7 @@
 """
 YOKOZUNA Bot v3
 Telegram-бот для SMM-команды канала @yokozuna_rus
-Flask + OpenAI gpt-4.5-preview
+Flask + OpenAI gpt-4o
 """
 
 import os
@@ -45,8 +45,7 @@ VK_DOMAIN       = "yokozuna_japan"
 VK_API_VERSION  = "5.199"
 VK_POSTS_COUNT  = 20
 
-OPENAI_MODEL    = os.environ.get("OPENAI_MODEL", "gpt-4o")
-
+OPENAI_MODEL    = "gpt-4o"
 
 # ─────────────────────────────────────────────
 # ENV
@@ -329,19 +328,19 @@ def send_message(chat_id: int, text: str, parse_mode: str = "Markdown",
 START_KEYBOARD = {
     "inline_keyboard": [
         [
-            {"text": "🔄 Синк каналов", "callback_data": "/sync"},
-            {"text": "💡 Идеи", "callback_data": "/ideas"},
+            {"text": "🔄 Sync channels", "callback_data": "/sync"},
+            {"text": "💡 Ideas", "callback_data": "/ideas"},
         ],
         [
-            {"text": "📋 Реестр RU", "callback_data": "/registry_ru"},
-            {"text": "📋 Реестр EN", "callback_data": "/registry_en"},
+            {"text": "📋 Registry RU", "callback_data": "/registry_ru"},
+            {"text": "📋 Registry EN", "callback_data": "/registry_en"},
         ],
         [
-            {"text": "📅 План RU", "callback_data": "/plan_ru"},
-            {"text": "📅 План EN", "callback_data": "/plan_en"},
+            {"text": "📅 Plan RU", "callback_data": "/plan_ru"},
+            {"text": "📅 Plan EN", "callback_data": "/plan_en"},
         ],
         [
-            {"text": "🔔 Напоминания", "callback_data": "/reminders"},
+            {"text": "🔔 Reminders", "callback_data": "/reminders"},
         ],
     ]
 }
@@ -556,21 +555,52 @@ def fetch_vk_posts() -> list:
     return posts
 
 
-def fetch_telegram_channel_posts() -> list:
-    """Fetch recent posts from @yokozuna_rus via bot API (if bot is admin)."""
-    posts = []
+TELEGRAM_POSTS_CACHE = "/tmp/yokozuna_tg_posts_cache.json"
+
+
+def load_tg_cache() -> dict:
     try:
-        # Try to get recent updates or use getHistory if available
-        # Bot can only read messages from channels where it's admin
-        # We use getUpdates with a large offset as a fallback approach
-        # In production, forward channel messages to the bot or use a user bot
-        # Here we attempt to read from the channel via forwardMessage workaround
-        # Since standard Bot API doesn't allow channel history, we log a note
-        log.info("Telegram channel monitoring: requires bot to be admin of @yokozuna_rus")
-        # If there are cached updates, we can parse them
-        # In production, set up channel forwarding to the bot
-    except Exception as e:
-        log.error(f"Telegram channel fetch error: {e}")
+        with open(TELEGRAM_POSTS_CACHE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except:
+        return {"posts": [], "last_message_id": 0}
+
+
+def save_tg_cache(data: dict):
+    with open(TELEGRAM_POSTS_CACHE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def store_channel_post(message: dict):
+    """Called from webhook when a channel_post arrives — saves to cache."""
+    text = message.get("text", "").strip()
+    if not text or len(text) < 30:  # skip short/empty posts
+        return
+    cache = load_tg_cache()
+    msg_id = message.get("message_id", 0)
+    # deduplicate
+    existing_ids = {p.get("message_id") for p in cache["posts"]}
+    if msg_id not in existing_ids:
+        cache["posts"].append({
+            "message_id": msg_id,
+            "date": datetime.fromtimestamp(message.get("date", 0)).strftime("%d.%m.%Y"),
+            "text": text[:800],
+            "url": f"https://t.me/yokozuna_rus/{msg_id}",
+            "source": "telegram",
+        })
+        if msg_id > cache["last_message_id"]:
+            cache["last_message_id"] = msg_id
+        # keep last 200 posts
+        cache["posts"] = cache["posts"][-200:]
+        save_tg_cache(cache)
+        log.info(f"Cached TG post {msg_id}")
+
+
+def fetch_telegram_channel_posts() -> list:
+    """Return cached channel posts collected via webhook."""
+    cache = load_tg_cache()
+    posts = cache.get("posts", [])
+    log.info(f"Telegram cache: {len(posts)} posts available")
     return posts
 
 
@@ -766,17 +796,27 @@ def generate_content_plan(stream: str) -> str:
 Рубрики и их частота:
 {json.dumps({k: v.get('frequency','') for k,v in stream_rubrics.items()}, ensure_ascii=False)}
 
-Формат ответа — таблица (Markdown):
-День | Рубрика | Тема поста | Канал | Тезисы
+Формат ответа — список для Telegram (БЕЗ markdown-таблиц, они не рендерятся):
+
+📅 *Контент-план RU на неделю*
+
+*Пн* — [Рубрика] [Канал]
+Тема: [конкретная тема с деталями]
+Тезисы: T.. · Угол: А/Б/В
+
+*Вт* — [Рубрика] [Канал]
+Тема: ...
+Тезисы: ...
+
+...и так далее до Вс
 
 Правила:
-- 7 строк (Пн-Вс)
-- Темы конкретные, с деталями (марки, цифры, аукционы)
-- Каналы: Telegram / VK / RuTube / Все RU
+- 7 дней (Пн-Вс), один пост в день
+- Темы конкретные: марки авто, цифры, аукционы, даты
+- Каналы: Telegram / VK / RuTube
 - Распределить рубрики согласно частоте
 - Использовать незакрытые тезисы
-
-Добавь краткие пояснения по каждому посту после таблицы."""
+- Никаких таблиц и символов | в ответе"""
 
     else:
         prompt = f"""Create a weekly content plan for EN stream (YouTube, Facebook, X/Twitter, LinkedIn).
@@ -788,17 +828,30 @@ Ideas: {ideas_text}
 Rubrics and frequency:
 {json.dumps({k: v.get('frequency','') for k,v in stream_rubrics.items()}, ensure_ascii=False)}
 
-Response format — Markdown table:
-Day | Rubric | Post Topic | Channel | Tezisy
+Response format — Telegram-friendly list (NO markdown tables, they don't render):
+
+📅 *EN Content Plan — Week*
+
+*Mon* — [Rubric] [Channel]
+Topic EN: [specific topic with car models, prices, auction names]
+Тема RU: [перевод темы на русский язык]
+Theses: T.. · Angle: А/Б/В
+
+*Tue* — [Rubric] [Channel]
+Topic EN: ...
+Тема RU: ...
+Theses: ...
+
+...continue through Sun
 
 Rules:
-- 7 rows (Mon-Sun)
-- Specific topics with details (car models, prices, auction names)
-- Channels: YouTube / Facebook / X/Twitter / LinkedIn / All EN
+- 7 days (Mon-Sun), one post per day
+- Every topic MUST have both: Topic EN (English) and Тема RU (Russian translation)
+- Specific topics with details: car models, yen prices, auction names
+- Channels: YouTube / Facebook / X/Twitter / LinkedIn
 - Match rubric frequency
-- Cover uncovered tezisy
-
-Add brief notes after the table."""
+- Cover uncovered theses
+- NO tables, NO pipe | characters in response"""
 
     return gpt(prompt, temperature=0.6)
 
@@ -1114,43 +1167,45 @@ def combine_posts(chat_id: int, indices_str: str) -> str:
 
 HELP_TEXT = """🤖 *YOKOZUNA SMM Bot v3*
 
-━━━ КОМАНДЫ ━━━
+━━━ COMMANDS ━━━
 
-`/синк` — синхронизация всех каналов (Telegram/VK/RuTube)
-`/реестр ru|en|telegram|vk|rutube` — реестр постов за 30 дней
-`/план ru|en` — контент-план на неделю
-`/идеи` — банк идей
-`/напоминания` — активные напоминания
+`/sync` — sync all channels (Telegram/VK/RuTube)
+`/registry_ru` — RU posts registry (30 days)
+`/registry_en` — EN posts registry (30 days)
+`/plan_ru` — RU content plan for the week
+`/plan_en` — EN content plan for the week
+`/ideas` — ideas bank
+`/reminders` — active reminders
 
-━━━ КОНТЕНТ ━━━
+━━━ CONTENT ━━━
 
-`[любой текст/ссылка]` → генерация поста
-`идея: [текст]` → сохранить идею в банк
-`идея в план: [текст]` → добавить идею в контент-план
-`доработай: [комментарий]` → переработать последний пост
-`+1 +3` → объединить темы дайджеста
+`[any text/link]` → generate post
+`idea: [text]` → save idea to bank
+`idea to plan: [text]` → add idea to content plan
+`refine: [comment]` → rework last post
+`+1 +3` → combine digest topics
 
-━━━ ВИДЕО ━━━
+━━━ VIDEO ━━━
 
-`описание для видео ru: тема` → материалы для RuTube/VK
-`описание для видео en: тема` → материалы для YouTube
+`video description ru: topic` → materials for RuTube/VK
+`video description en: topic` → materials for YouTube
 
-━━━ ПЛАНИРОВАНИЕ ━━━
+━━━ PLANNING ━━━
 
-`запланировано в X: тема` — напоминание на завтра
-`запланировано в FB: тема` — напоминание на завтра
-`запланировано в LinkedIn: тема` — напоминание на завтра
-`опубликовано в [канал]: тема` — зафиксировать в реестре
+`planned in X: topic` — reminder for tomorrow
+`planned in FB: topic` — reminder for tomorrow
+`planned in LinkedIn: topic` — reminder for tomorrow
+`published in [channel]: topic` — log to registry
 
-━━━ РУБРИКИ ━━━
+━━━ RUBRICS ━━━
 
-`уточни рубрику [название]: правки` → обновить правила рубрики
+`update rubric [name]: changes` → update rubric rules
 
-━━━ ПОТОКИ ━━━
+━━━ STREAMS ━━━
 *RU*: @yokozuna_rus, VK, RuTube
 *EN*: YouTube, Facebook, X/Twitter, LinkedIn
 
-В группе бот реагирует только на @sumotori_smm_bot или reply на свои сообщения."""
+In group: mention @sumotori_smm_bot or reply to bot messages."""
 
 # ─────────────────────────────────────────────
 # MESSAGE ROUTER
@@ -1198,7 +1253,7 @@ def route_message(message: dict) -> Optional[str]:
     if lower.startswith("/план"):
         arg = clean_text[5:].strip().lower() or "ru"
         if arg not in ("ru", "en"):
-            return "❗️ Укажи поток: `/план ru` или `/план en`"
+            return "❗️ Укажи поток: `/plan_ru` или `/plan_en`"
         return generate_content_plan(arg)
     if lower == "/plan_ru":
         return generate_content_plan("ru")
@@ -1213,54 +1268,54 @@ def route_message(message: dict) -> Optional[str]:
     if lower in ("/напоминания", "напоминания", "/reminders"):
         return show_reminders()
 
-    # ── идея в план: ──
-    if lower.startswith("идея в план:"):
-        idea_text = clean_text[12:].strip()
+    # ── idea to plan / идея в план ──
+    if lower.startswith("идея в план:") or lower.startswith("idea to plan:"):
+        idea_text = re.sub(r'^(идея в план|idea to plan):\s*', '', clean_text, flags=re.IGNORECASE).strip()
         return add_idea_to_plan(idea_text)
 
-    # ── идея: ──
-    if lower.startswith("идея:"):
-        idea_text = clean_text[5:].strip()
+    # ── idea: / идея: ──
+    if lower.startswith("идея:") or lower.startswith("idea:"):
+        idea_text = re.sub(r'^(идея|idea):\s*', '', clean_text, flags=re.IGNORECASE).strip()
         return save_idea(idea_text, author)
 
-    # ── запланировано в X|FB|LinkedIn: тема ──
+    # ── planned in / запланировано в ──
     reminder_match = re.match(
-        r"запланировано\s+в\s+([a-zA-Zа-яА-Я/]+)\s*:\s*(.+)",
+        r"(planned\s+in|запланировано\s+в)\s+([a-zA-Zа-яА-Я/]+)\s*:\s*(.+)",
         clean_text, re.IGNORECASE
     )
     if reminder_match:
-        platform = reminder_match.group(1).strip()
-        topic = reminder_match.group(2).strip()
+        platform = reminder_match.group(2).strip()
+        topic = reminder_match.group(3).strip()
         return create_reminder(platform, topic, author)
 
-    # ── опубликовано в [канал]: тема ──
+    # ── published in / опубликовано в ──
     published_match = re.match(
-        r"опубликовано\s+в\s+([a-zA-Zа-яА-Я/]+)\s*:\s*(.+)",
+        r"(published\s+in|опубликовано\s+в)\s+([a-zA-Zа-яА-Я/]+)\s*:\s*(.+)",
         clean_text, re.IGNORECASE
     )
     if published_match:
-        channel = published_match.group(1).strip()
-        topic = published_match.group(2).strip()
+        channel = published_match.group(2).strip()
+        topic = published_match.group(3).strip()
         return manual_register(channel, topic, author)
 
-    # ── описание для видео ru|en: тема ──
+    # ── video description / описание для видео ──
     video_match = re.match(
-        r"описание\s+для\s+видео\s+(ru|en)\s*:\s*(.+)",
+        r"(video\s+description|video\s+desc|описание\s+для\s+видео)\s+(ru|en)\s*:\s*(.+)",
         clean_text, re.IGNORECASE
     )
     if video_match:
-        stream = video_match.group(1).lower()
-        topic = video_match.group(2).strip()
+        stream = video_match.group(2).lower()
+        topic = video_match.group(3).strip()
         return generate_video_description(stream, topic)
 
-    # ── уточни рубрику [название]: правки ──
+    # ── update rubric / уточни рубрику ──
     rubric_match = re.match(
-        r"уточни\s+рубрику\s+(.+?)\s*:\s*(.+)",
+        r"(update\s+rubric|уточни\s+рубрику)\s+(.+?)\s*:\s*(.+)",
         clean_text, re.IGNORECASE | re.DOTALL
     )
     if rubric_match:
-        rubric_name = rubric_match.group(1).strip()
-        changes = rubric_match.group(2).strip()
+        rubric_name = rubric_match.group(2).strip()
+        changes = rubric_match.group(3).strip()
         return update_rubric(rubric_name, changes)
 
     # ── доработай [#N]: комментарий ──
@@ -1318,6 +1373,14 @@ def webhook():
                 response_text = route_message(fake_msg)
                 if response_text:
                     send_message(cb_chat_id, response_text)
+            return jsonify({"ok": True}), 200
+
+        # ── Handle channel_post (посты из канала @yokozuna_rus) ──
+        channel_post = data.get("channel_post")
+        if channel_post:
+            chat_id_cp = channel_post.get("chat", {}).get("id")
+            if chat_id_cp == CHANNEL_RU_ID:
+                store_channel_post(channel_post)
             return jsonify({"ok": True}), 200
 
         # ── Handle message ──
