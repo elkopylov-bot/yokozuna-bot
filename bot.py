@@ -312,13 +312,23 @@ def send_message(chat_id: int, text: str, parse_mode: str = "Markdown",
             payload["reply_markup"] = reply_markup
         try:
             r = requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=30)
+            if r.status_code == 400:
+                # HTML parse error — retry as plain text
+                log.warning(f"HTML parse failed, retrying as plain text")
+                payload2 = dict(payload)
+                payload2.pop("parse_mode", None)
+                # Strip basic HTML tags for plain text
+                import re as _re
+                plain = _re.sub(r'<[^>]+>', '', payload2["text"])
+                payload2["text"] = plain
+                r = requests.post(f"{TELEGRAM_API}/sendMessage", json=payload2, timeout=30)
             r.raise_for_status()
             last_response = r.json()
         except Exception as e:
             log.error(f"sendMessage error: {e}")
             try:
-                payload["parse_mode"] = None
-                r = requests.post(f"{TELEGRAM_API}/sendMessage", json=payload, timeout=30)
+                plain_payload = {"chat_id": payload["chat_id"], "text": payload["text"][:4000]}
+                r = requests.post(f"{TELEGRAM_API}/sendMessage", json=plain_payload, timeout=30)
                 last_response = r.json()
             except Exception as e2:
                 log.error(f"sendMessage fallback error: {e2}")
