@@ -1356,6 +1356,23 @@ def health():
     return jsonify({"status": "ok", "bot": BOT_USERNAME, "version": "3.0"}), 200
 
 
+@app.route("/upload_registry", methods=["POST"])
+def upload_registry():
+    """Load registry from external source (one-time migration)."""
+    data = request.get_json(force=True, silent=True)
+    if not data or data.get("secret") != "yokozuna2026":
+        return jsonify({"error": "unauthorized"}), 403
+    registry = data.get("registry")
+    if not registry:
+        return jsonify({"error": "no registry"}), 400
+    try:
+        save_registry(registry)
+        tg_count = len(registry.get("ru", {}).get("telegram", []))
+        return jsonify({"ok": True, "telegram_posts": tg_count}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
