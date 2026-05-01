@@ -41,7 +41,7 @@ PERSONAL_ID       = 59125267
 
 GITHUB_TOKEN     = os.environ.get("GITHUB_TOKEN", "")
 GITHUB_REPO      = os.environ.get("GITHUB_REPO", "elkopylov-bot/yokozuna-bot")
-GITHUB_BRANCH    = "main"
+GITHUB_BRANCH    = "data-storage"
 REGISTRY_GH_PATH = "data/registry.json"
 GH_API           = "https://api.github.com"
 
