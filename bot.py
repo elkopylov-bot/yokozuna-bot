@@ -45,7 +45,7 @@ VK_DOMAIN       = "yokozuna_japan"
 VK_API_VERSION  = "5.199"
 VK_POSTS_COUNT  = 20
 
-OPENAI_MODEL    = "gpt-4o"
+OPENAI_MODEL    = "gpt-5.5"
 
 # ─────────────────────────────────────────────
 # ENV
@@ -737,26 +737,29 @@ def format_registry(stream_or_channel: str) -> str:
 
         # Recent posts list
         lines.append(f"\n*Последние посты:*")
-        sorted_posts = sorted(all_posts, key=lambda x: x.get("synced_at", x.get("date", "")), reverse=True)[:10]
+        sorted_posts = sorted(all_posts, key=lambda x: x.get("synced_at", x.get("date", "")), reverse=True)[:15]
         for p in sorted_posts:
-            title = p.get("title", "")[:50]
-            rubric = p.get("rubric", "—")
-            source = p.get("source", "—")
-            tezisy = ", ".join(p.get("tezisy", []))
-            lines.append(f"• [{source}] {title} | {rubric} | {tezisy}")
+            date = p.get("date", "")[:10]
+            preview = (p.get("title") or p.get("text", ""))[:65]
+            rubric = p.get("rubric", "не разобран")
+            tezisy = ", ".join(p.get("tezisy", [])) or "—"
+            lines.append(f"• {date} | {preview}")
+            lines.append(f"  {rubric} | {tezisy}")
 
     elif arg in ("telegram", "vk", "rutube", "youtube", "facebook", "twitter", "linkedin"):
         lines.append(f"📊 *Реестр {arg.upper()} — последние 30 дней*\n")
-        # Search in both streams
         for stream in ("ru", "en"):
             ch_posts = registry.get(stream, {}).get(arg, [])
             recent = posts_in_30d(ch_posts)
             if recent:
                 lines.append(f"Поток {stream.upper()}: {len(recent)} постов")
-                for p in recent[:10]:
-                    title = p.get("title", "")[:60]
-                    rubric = p.get("rubric", "—")
-                    lines.append(f"  • {title} | {rubric}")
+                for p in recent[:15]:
+                    date = p.get("date", "")[:10]
+                    preview = (p.get("title") or p.get("text", ""))[:65]
+                    rubric = p.get("rubric", "не разобран")
+                    tezisy = ", ".join(p.get("tezisy", [])) or "—"
+                    lines.append(f"  • {date} | {preview}")
+                    lines.append(f"    {rubric} | {tezisy}")
     else:
         lines.append("❗️ Неверный аргумент. Используй: /реестр ru | en | telegram | vk | rutube")
 
