@@ -35,6 +35,65 @@ CHANNEL_RU_ID     = -1001821163646
 GROUP_ID          = -5195521945
 PERSONAL_ID       = 59125267
 
+# ─────────────────────────────────────────────
+# GITHUB PERSISTENT STORAGE
+# ─────────────────────────────────────────────
+
+GITHUB_TOKEN     = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPO      = os.environ.get("GITHUB_REPO", "elkopylov-bot/yokozuna-bot")
+GITHUB_BRANCH    = "main"
+REGISTRY_GH_PATH = "data/registry.json"
+GH_API           = "https://api.github.com"
+
+def gh_headers():
+    return {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+
+def load_registry_from_github() -> dict:
+    """Load registry from GitHub on startup."""
+    try:
+        url = f"{GH_API}/repos/{GITHUB_REPO}/contents/{REGISTRY_GH_PATH}"
+        r = requests.get(url, headers=gh_headers(), timeout=15)
+        if r.status_code == 200:
+            import base64 as _b64
+            content_b64 = r.json().get("content", "").replace("\n", "")
+            data = _b64.b64decode(content_b64).decode("utf-8")
+            registry = json.loads(data)
+            save_registry(registry)
+            log.info(f"Registry loaded from GitHub: {len(registry.get('ru',{}).get('telegram',[]))} TG posts")
+            return registry
+        else:
+            log.info(f"No registry in GitHub yet ({r.status_code}), using empty")
+    except Exception as e:
+        log.error(f"GitHub load error: {e}")
+    return {"ru": {"telegram": [], "vk": [], "rutube": []}, "en": {}, "ideas": []}
+
+def save_registry_to_github(registry: dict):
+    """Persist registry to GitHub after every update."""
+    try:
+        import base64 as _b64
+        content_str = json.dumps(registry, ensure_ascii=False, indent=2)
+        content_b64 = _b64.b64encode(content_str.encode("utf-8")).decode("ascii")
+        url = f"{GH_API}/repos/{GITHUB_REPO}/contents/{REGISTRY_GH_PATH}"
+        sha = None
+        r = requests.get(url, headers=gh_headers(), timeout=10)
+        if r.status_code == 200:
+            sha = r.json().get("sha")
+        payload = {
+            "message": f"Update registry {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            "content": content_b64,
+            "branch": GITHUB_BRANCH,
+        }
+        if sha:
+            payload["sha"] = sha
+        r2 = requests.put(url, headers=gh_headers(), json=payload, timeout=30)
+        if r2.status_code in (200, 201):
+            log.info("Registry saved to GitHub ✅")
+        else:
+            log.error(f"GitHub save error: {r2.status_code}")
+    except Exception as e:
+        log.error(f"GitHub save exception: {e}")
+
+
 REGISTRY_FILE   = "/tmp/yokozuna_registry.json"
 REMINDERS_FILE  = "/tmp/yokozuna_reminders.json"
 RUBRICS_FILE    = "/tmp/yokozuna_rubrics.json"
@@ -257,6 +316,11 @@ def load_registry() -> dict:
 
 def save_registry(data: dict) -> None:
     _save_json(REGISTRY_FILE, data)
+    # Persist to GitHub for survival across deploys
+    try:
+        save_registry_to_github(data)
+    except Exception as e:
+        log.warning(f"GitHub registry save skipped: {e}")
 
 
 def load_reminders() -> list:
@@ -1475,8 +1539,9 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     log.info(f"Starting YOKOZUNA Bot v3 on port {port}")
 
-    # Initialize storage files
-    load_registry()
+    # Initialize storage files — load from GitHub first
+    log.info("Loading registry from GitHub...")
+    load_registry_from_github()
     load_rubrics()
     load_ideas()
     load_reminders()
